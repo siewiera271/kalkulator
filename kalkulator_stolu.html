@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kalkulator stołu – WYPOSAŻENIE DJ’a</title>
+  <style>
+    body{font-family:system-ui,Arial; max-width:1100px; margin:20px auto; padding:0 12px;}
+    h2{margin:0 0 8px}
+    .small{font-size:13px; opacity:.85; line-height:1.35}
+    label{display:block; margin-top:12px; font-weight:900}
+    input, select{width:100%; padding:10px; font-size:16px; box-sizing:border-box;}
+    .row{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
+    button{margin-top:16px; padding:12px; font-size:16px; width:100%; font-weight:900}
+    .out{margin-top:16px; padding:14px; background:#f3f3f3; border-radius:10px; line-height:1.45}
+    .err{margin-top:12px; padding:12px; background:#ffe3e3; border-radius:10px; font-weight:900; display:none}
+    .ok{margin-top:12px; padding:12px; background:#e9ffe3; border-radius:10px; font-weight:900; display:none}
+    hr{border:0; border-top:1px solid #ddd; margin:12px 0}
+    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}
+    ul{margin:6px 0 0 18px}
+    .grid2{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
+    .pill{display:inline-block; padding:2px 8px; border-radius:999px; background:#e8e8e8; font-size:12px; font-weight:900}
+    .checkline{display:flex; gap:10px; align-items:center; margin-top:12px; user-select:none}
+    .checkline input{width:auto; transform:scale(1.2)}
+    .muted{opacity:.8}
+    .layout{display:grid; grid-template-columns: 420px 1fr; gap:16px; align-items:start; margin-top:12px;}
+    @media (max-width: 980px){
+      .layout{grid-template-columns:1fr;}
+    }
+    canvas{background:#0b0b0b; border-radius:12px; width:100%; height:auto; display:block;}
+  </style>
+</head>
+<body>
+  <h2>Kalkulator materiału i kosztu stołu – WYPOSAŻENIE DJ’a</h2>
+
+  <div class="small">
+    <span class="pill">Wpisujesz</span> <b>wymiary zewnętrzne stołu</b>: L (długość), W (bok), H (wysokość).<br>
+    <span class="pill">Aplikacja liczy</span> W−8 (po profilu), (W−8)−2 (szer. blatu pod blachę), L−4 (dł. blatu pod blachę).<br>
+    <span class="pill">Składanie</span> jeśli <b>bok = (W−8)</b> > <b>(L/2)−12−2</b> → komunikat <b>„za duży bok”</b>.
+  </div>
+
+  <div class="layout">
+    <div>
+      <div class="row">
+        <div>
+          <label>Długość stołu L (cm)</label>
+          <input id="L" type="number" step="1" value="150" oninput="preview()">
+        </div>
+        <div>
+          <label>Szerokość boku W (cm)</label>
+          <input id="W" type="number" step="1" value="60" oninput="preview()">
+        </div>
+      </div>
+
+      <label>Wysokość stołu / profila H (cm)</label>
+      <input id="H" type="number" step="1" value="120" oninput="preview()">
+
+      <div class="row">
+        <div>
+          <label>Roboczogodziny</label>
+          <select id="laborMode" onchange="toggleLaborMode(); preview();">
+            <option value="auto" selected>AUTO (150×60 = 3h)</option>
+            <option value="manual">Ręcznie (wpisuję sam)</option>
+          </select>
+          <div class="small muted" style="margin-top:6px">
+            AUTO liczy proporcjonalnie do powierzchni L×W.
+          </div>
+        </div>
+        <div>
+          <label>Godziny (manual)</label>
+          <input id="laborHoursManual" type="number" step="0.25" value="3" disabled oninput="preview()">
+          <div class="small muted" style="margin-top:6px">Aktywne tylko w trybie „Ręcznie”.</div>
+        </div>
+      </div>
+
+      <div class="checkline">
+        <input id="roundPrice" type="checkbox" checked onchange="preview()">
+        <label for="roundPrice" style="margin:0; font-weight:900;">
+          Wyrównaj cenę (zaokrąglij w górę do 50 zł)
+        </label>
+      </div>
+
+      <button onclick="calc()">Policz</button>
+
+      <div id="msgErr" class="err"></div>
+      <div id="msgOk" class="ok"></div>
+    </div>
+
+    <div>
+      <canvas id="cnv" width="1100" height="1350"></canvas>
+      <div class="small muted" style="margin-top:6px">
+        Na rysunku wartości są <b>podstawione liczbami</b> z tego co wpiszesz w polach.
+      </div>
+    </div>
+  </div>
+
+  <div class="out" id="out">Wynik pojawi się tutaj po kliknięciu „Policz”.</div>
+
+  <script>
+    // ===== CENNIK (wg Ciebie) =====
+    const PRICE_PROFILE_PER_M = 40;      // profil 40x40x2: 40 zł / 1 m
+    const SHEET15_AREA_M2 = 1.0;         // blacha 1.5 mm: 1x1 m
+    const SHEET15_PRICE = 90;
+
+    const SHEET2_AREA_M2 = 0.5;          // blacha 2 mm: 50x100 cm = 0.5 m2
+    const SHEET2_PRICE = 120;
+
+    const PAINT_PER_M2 = 70;             // malowanie: 70 zł / m2
+    const HARDWARE_FIXED = 50;           // śruby+zaślepki+zawiasy
+    const WORK_FIXED = 50;               // spawanie + szlifowanie
+
+    // Roboczogodziny
+    const LABOR_RATE_PER_H = 200;        // 200 zł / h
+    const REF_L = 150;                   // cm
+    const REF_W = 60;                    // cm
+    const REF_HOURS = 3;                 // 150x60 = 3 h
+
+    function ceilDiv(a, b){ return Math.ceil(a / b); }
+    function fmt(n){ return Number(n).toFixed(2); }
+    function fmt0(n){ return String(Math.round(n)); }
+
+    function roundUpTo50(zl){
+      return Math.ceil(zl / 50) * 50;
+    }
+
+    function toggleLaborMode(){
+      const mode = document.getElementById('laborMode').value;
+      document.getElementById('laborHoursManual').disabled = (mode !== 'manual');
+    }
+
+    function getInputs(){
+      const Lcm = Number(document.getElementById('L').value);
+      const Wcm = Number(document.getElementById('W').value);
+      const Hcm = Number(document.getElementById('H').value);
+      return {Lcm, Wcm, Hcm};
+    }
+
+    function computeAll(){
+      const {Lcm, Wcm, Hcm} = getInputs();
+
+      // po odjęciach
+      const frontShortCm = Lcm - 8;      // do przodu: 3×(L-8)
+      const sideShortCm  = Wcm - 8;      // do boków i blatu prof.: 3×(W-8)
+      const topLenCm     = Lcm - 4;      // długość blachy blatu
+      const topWidCm     = sideShortCm - 2; // szerokość blachy blatu = (W-8)-2
+
+      // składanie
+      const bokCm = sideShortCm;
+      const maxBokCm = (Lcm / 2) - 12 - 2; // L/2 - 14
+      const foldingOk = bokCm <= maxBokCm;
+
+      // profil – cięcia
+      const frontProfileCm = (2*Hcm) + (3*frontShortCm);
+      const sideProfileOneCm = (2*Hcm) + (3*sideShortCm);
+      const sidesProfileCm = 2 * sideProfileOneCm;
+      const topProfileCm = (2*Lcm) + (3*sideShortCm);
+
+      const totalProfileCm = frontProfileCm + sidesProfileCm + topProfileCm;
+      const totalProfileM  = totalProfileCm / 100;
+      const profileCost    = totalProfileM * PRICE_PROFILE_PER_M;
+
+      // blacha 1.5 mm – obicie dookoła: obwód * wysokość
+      const perimeterM = 2 * ((Lcm + Wcm) / 100);
+      const wrapAreaM2 = perimeterM * (Hcm / 100);
+      const sheets15 = ceilDiv(wrapAreaM2, SHEET15_AREA_M2);
+      const sheet15Cost = sheets15 * SHEET15_PRICE;
+
+      // blacha 2 mm – blat
+      const topAreaM2 = (topLenCm/100) * (topWidCm/100);
+      const sheets2 = ceilDiv(topAreaM2, SHEET2_AREA_M2);
+      const sheet2Cost = sheets2 * SHEET2_PRICE;
+
+      // malowanie
+      const paintAreaM2 = wrapAreaM2 + topAreaM2;
+      const paintCost = paintAreaM2 * PAINT_PER_M2;
+
+      // roboczogodziny
+      const laborMode = document.getElementById('laborMode').value;
+      let laborHours = 0;
+      if(laborMode === 'manual'){
+        laborHours = Number(document.getElementById('laborHoursManual').value);
+      } else {
+        laborHours = REF_HOURS * ((Lcm * Wcm) / (REF_L * REF_W));
+      }
+      const laborCost = laborHours * LABOR_RATE_PER_H;
+
+      const baseTotal =
+        profileCost +
+        sheet15Cost +
+        sheet2Cost +
+        paintCost +
+        HARDWARE_FIXED +
+        WORK_FIXED +
+        laborCost;
+
+      const doRound = document.getElementById('roundPrice').checked;
+      const finalTotal = doRound ? roundUpTo50(baseTotal) : baseTotal;
+
+      return {
+        Lcm, Wcm, Hcm,
+        frontShortCm, sideShortCm, topLenCm, topWidCm,
+        bokCm, maxBokCm, foldingOk,
+        frontProfileCm, sideProfileOneCm, sidesProfileCm, topProfileCm,
+        totalProfileM, profileCost,
+        wrapAreaM2, sheets15, sheet15Cost,
+        topAreaM2, sheets2, sheet2Cost,
+        paintAreaM2, paintCost,
+        laborHours, laborCost,
+        baseTotal, finalTotal
+      };
+    }
+
+    // ===== RYSUNEK (CANVAS) – wartości z aplikacji =====
+    function draw(){
+      const cnv = document.getElementById('cnv');
+      const ctx = cnv.getContext('2d');
+      const d = computeAll();
+
+      // tło
+      ctx.clearRect(0,0,cnv.width,cnv.height);
+      ctx.fillStyle = "#0b0b0b";
+      ctx.fillRect(0,0,cnv.width,cnv.height);
+
+      const white = "#ffffff";
+      const gray = "rgba(255,255,255,0.75)";
+
+      function text(x,y,s,size=46,color=white,align="left"){
+        ctx.fillStyle = color;
+        ctx.font = `700 ${size}px system-ui, Arial`;
+        ctx.textAlign = align;
+        ctx.fillText(s,x,y);
+      }
+      function line(x1,y1,x2,y2,w=8,color=white){
+        ctx.strokeStyle = color;
+        ctx.lineWidth = w;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(x1,y1);
+        ctx.lineTo(x2,y2);
+        ctx.stroke();
+      }
+      function arrow(x1,y1,x2,y2,w=6,color=white){
+        // linia
+        line(x1,y1,x2,y2,w,color);
+        // grot
+        const ang = Math.atan2(y2-y1, x2-x1);
+        const len = 22;
+        const a1 = ang + Math.PI*0.85;
+        const a2 = ang - Math.PI*0.85;
+        line(x2,y2, x2 + len*Math.cos(a1), y2 + len*Math.sin(a1), w, color);
+        line(x2,y2, x2 + len*Math.cos(a2), y2 + len*Math.sin(a2), w, color);
+      }
+      function dimArrow(x1,y1,x2,y2,label){
+        arrow(x1,y1,x2,y2,6,white);
+        // label pośrodku
+        const mx = (x1+x2)/2, my = (y1+y2)/2;
+        ctx.fillStyle = white;
+        ctx.font = `800 42px system-ui, Arial`;
+        ctx.textAlign = "center";
+        // lekki „halo”
+        ctx.strokeStyle = "#000";
+        ctx.lineWidth = 10;
+        ctx.strokeText(label, mx, my-16);
+        ctx.fillText(label, mx, my-16);
+      }
+
+      // Walidacja minimalna pod rysunek
+      const bad =
+        !isFinite(d.Lcm) || !isFinite(d.Wcm) || !isFinite(d.Hcm) ||
+        d.Lcm<=0 || d.Wcm<=0 || d.Hcm<=0 ||
+        d.frontShortCm<=0 || d.sideShortCm<=0 || d.topLenCm<=0 || d.topWidCm<=0;
+
+      // Nagłówki
+      text(80, 140, "Przód", 86);
+      text(80, 600, "Bok", 86);
+      text(470, 965, "Blat", 86, white, "center");
+
+      if(bad){
+        text(550, 1240, "Sprawdź wymiary (za małe).", 52, "#ffb3b3", "center");
+        return;
+      }
+
+      // ===== PRZÓD =====
+      // ramka
+      const fx=420, fy=80, fw=600, fh=260;
+      line(fx,fy, fx+fw,fy, 10);
+      line(fx,fy+fh, fx+fw,fy+fh, 10);
+      line(fx,fy, fx,fy+fh, 10);
+      line(fx+fw,fy, fx+fw,fy+fh, 10);
+      // poprzeczka
+      line(fx+20, fy+70, fx+fw-20, fy+70, 10);
+
+      // wymiary: zewnętrzny L i wewnętrzny (L-8)
+      dimArrow(fx, fy+fh+80, fx+fw, fy+fh+80, `${fmt0(d.Lcm)} cm`);
+      dimArrow(fx+40, fy+fh/2, fx+fw-40, fy+fh/2, `${fmt0(d.frontShortCm)} cm`);
+
+      // wysokość H
+      dimArrow(fx-80, fy, fx-80, fy+fh, `${fmt0(d.Hcm)} cm`);
+
+      // ===== BOK =====
+      const sx=520, sy=520, sw=300, sh=320;
+      line(sx,sy, sx+sw,sy, 10);
+      line(sx,sy+sh, sx+sw,sy+sh, 10);
+      line(sx,sy, sx,sy+sh, 10);
+      line(sx+sw,sy, sx+sw,sy+sh, 10);
+      line(sx+20, sy+90, sx+sw-20, sy+90, 10);
+      // wymiary: zewnętrzny W i wewnętrzny (W-8)
+      dimArrow(sx, sy-70, sx+sw, sy-70, `${fmt0(d.Wcm)} cm`);
+      dimArrow(sx+40, sy+sh/2, sx+sw-40, sy+sh/2, `${fmt0(d.sideShortCm)} cm`);
+      // wysokość H
+      dimArrow(sx-80, sy, sx-80, sy+sh, `${fmt0(d.Hcm)} cm`);
+
+      // ===== BLAT =====
+      const tx=180, ty=1040, tw=780, th=220;
+      line(tx,ty, tx+tw,ty, 10);
+      line(tx,ty+th, tx+tw,ty+th, 10);
+      line(tx,ty, tx,ty+th, 10);
+      line(tx+tw,ty, tx+tw,ty+th, 10);
+
+      // zewnętrzny wymiar długości blatu na profilu = L (opis)
+      dimArrow(tx, ty+th+70, tx+tw, ty+th+70, `${fmt0(d.Lcm)} cm`);
+
+      // wewnętrzny/roboczy wymiar szerokości blatu pod blachę = (W-8)-2 (Twoja poprawka)
+      dimArrow(tx+40, ty+th/2, tx+tw-40, ty+th/2, `${fmt0(d.topWidCm)} cm`);
+
+      // wymiar na „szerokości” (pion) = długość pod blachę (L-4) -> ma być wartość z aplikacji
+      dimArrow(tx+tw+80, ty, tx+tw+80, ty+th, `${fmt0(d.topLenCm)} cm`);
+
+      // status składania
+      ctx.textAlign="center";
+      ctx.font = `900 44px system-ui, Arial`;
+      ctx.strokeStyle="#000";
+      ctx.lineWidth=10;
+
+      const okTxt = d.foldingOk
+        ? `OK składanie: bok ${fmt0(d.bokCm)} cm ≤ limit ${fmt0(d.maxBokCm)} cm`
+        : `za duży bok: ${fmt0(d.bokCm)} cm > limit ${fmt0(d.maxBokCm)} cm`;
+
+      ctx.strokeText(okTxt, 550, 1320);
+      ctx.fillStyle = d.foldingOk ? "#c9ffb8" : "#ffb3b3";
+      ctx.fillText(okTxt, 550, 1320);
+    }
+
+    function preview(){
+      try{ draw(); }catch(e){}
+    }
+
+    function calc(){
+      const d = computeAll();
+      const msgErr = document.getElementById('msgErr');
+      const msgOk  = document.getElementById('msgOk');
+      msgErr.style.display = "none";
+      msgOk.style.display  = "none";
+
+      // twarde błędy
+      const basicBad =
+        [d.Lcm,d.Wcm,d.Hcm].some(x => !isFinite(x) || x<=0) ||
+        d.frontShortCm<=0 || d.sideShortCm<=0 || d.topLenCm<=0 || d.topWidCm<=0;
+
+      if(basicBad){
+        msgErr.innerText = "Błąd: wymiary są za małe albo niepoprawne (po odjęciach wychodzi ≤ 0).";
+        msgErr.style.display = "block";
+        preview();
+        return;
+      }
+
+      if(!d.foldingOk){
+        msgErr.innerText = `za duży bok — maksymalny bok dla tej długości to ${fmt(d.maxBokCm)} cm, a masz ${fmt(d.bokCm)} cm`;
+        msgErr.style.display = "block";
+        preview();
+        return;
+      } else {
+        msgOk.innerText = `OK: bok ${fmt(d.bokCm)} cm mieści się w limicie ${fmt(d.maxBokCm)} cm`;
+        msgOk.style.display = "block";
+      }
+
+      // wynik
+      document.getElementById('out').innerHTML = `
+        <b>Wymiary wejściowe (zewnętrzne)</b><br>
+        L: <span class="mono">${fmt(d.Lcm)} cm</span> &nbsp;|&nbsp;
+        W: <span class="mono">${fmt(d.Wcm)} cm</span> &nbsp;|&nbsp;
+        H: <span class="mono">${fmt(d.Hcm)} cm</span>
+        <hr>
+
+        <b>Wymiary z aplikacji (po odjęciach)</b><br>
+        Bok po odjęciu 8: <span class="mono">${fmt(d.sideShortCm)} cm</span> (W−8)<br>
+        Blat pod blachę 2 mm: <span class="mono">${fmt(d.topLenCm)} × ${fmt(d.topWidCm)} cm</span>
+        (dł. L−4, szer. (W−8)−2)
+        <hr>
+
+        <b>Profil 40×40×2 – rozpiska cięć</b><br>
+        <div class="grid2">
+          <div>
+            <b>Przód</b>
+            <ul>
+              <li>2× H = 2× ${fmt(d.Hcm)} cm</li>
+              <li>3× (L−8) = 3× ${fmt(d.frontShortCm)} cm</li>
+            </ul>
+            Suma przód: <span class="mono">${fmt(d.frontProfileCm)} cm</span>
+          </div>
+          <div>
+            <b>Bok (1 szt) ×2</b>
+            <ul>
+              <li>2× H = 2× ${fmt(d.Hcm)} cm</li>
+              <li>3× (W−8) = 3× ${fmt(d.sideShortCm)} cm</li>
+            </ul>
+            Suma 1 bok: <span class="mono">${fmt(d.sideProfileOneCm)} cm</span><br>
+            Suma 2 boki: <span class="mono">${fmt(d.sidesProfileCm)} cm</span>
+          </div>
+        </div>
+
+        <div style="margin-top:10px">
+          <b>Blat (profil)</b>
+          <ul>
+            <li>2× L = 2× ${fmt(d.Lcm)} cm</li>
+            <li>3× (W−8) = 3× ${fmt(d.sideShortCm)} cm</li>
+          </ul>
+          Suma blat: <span class="mono">${fmt(d.topProfileCm)} cm</span>
+        </div>
+
+        <hr>
+        <b>Koszty materiałów i usług</b><br>
+        Profil: <span class="mono">${fmt(d.totalProfileM)} m</span> → <span class="mono">${fmt(d.profileCost)} zł</span><br>
+        Blacha 1,5 mm (1×1): <span class="mono">${d.sheets15} szt.</span> → <span class="mono">${fmt(d.sheet15Cost)} zł</span><br>
+        Blacha 2 mm (50×100): <span class="mono">${d.sheets2} szt.</span> → <span class="mono">${fmt(d.sheet2Cost)} zł</span><br>
+        Malowanie: <span class="mono">${fmt(d.paintAreaM2)} m²</span> → <span class="mono">${fmt(d.paintCost)} zł</span><br>
+        Roboczogodziny: <span class="mono">${fmt(d.laborHours)} h</span> × 200 → <span class="mono">${fmt(d.laborCost)} zł</span><br>
+        Stałe: osprzęt 50 zł + spaw/szlif 50 zł → <span class="mono">${fmt(HARDWARE_FIXED + WORK_FIXED)} zł</span>
+
+        <hr>
+        <b>Koszt produkcji (bez wyrównania):</b> <span class="mono"><b>${fmt(d.baseTotal)} zł</b></span><br>
+        <b>Koszt po wyrównaniu:</b> <span class="mono" style="font-size:18px;"><b>${fmt(d.finalTotal)} zł</b></span>
+      `;
+
+      preview();
+    }
+
+    // init
+    toggleLaborMode();
+    preview();
+  </script>
+</body>
+</html>
